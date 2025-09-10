@@ -1,0 +1,17 @@
+module d_ff_enable (
+    input  logic clk,       // clock
+    input  logic reset,     // reset síncrono
+    input  logic en,        // enable
+    input  logic d,         // entrada D
+    output logic q          // saída Q
+);
+
+    always_ff @(posedge clk) begin
+        if (reset)
+            q <= 1'b0;       // zera o FF se reset ativo
+        else if (en)
+            q <= d;          // atualiza apenas se enable ativo
+        // se en = 0, mantém valor anterior
+    end
+
+endmodule

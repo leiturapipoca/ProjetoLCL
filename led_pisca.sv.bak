@@ -1,0 +1,21 @@
+module led_pisca (
+    input  logic clk,      // clock lento (ex: 1Hz ou 10Hz, ideal p/ piscar visivelmente)
+    input  logic reset,    // reset geral
+    input  logic fim,      // enable do pisca (vem do FSM ou contador)
+    output logic [11:0] ledr // LEDR[17:6] = 12 LEDs
+);
+
+    logic estado_led;
+
+    always_ff @(posedge clk or posedge reset) begin
+        if (reset) begin
+            estado_led <= 0;
+        end else if (fim) begin
+            estado_led <= ~estado_led; // inverte estado a cada clock
+        end else begin
+            estado_led <= 0; // desliga LEDs se fim = 0
+        end
+    end
+
+    assign ledr = estado_led ? 12'b1111_1111_1111 : 12'b0000_0000_0000;
+endmodule

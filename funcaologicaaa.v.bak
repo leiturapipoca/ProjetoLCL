@@ -1,0 +1,20 @@
+module funcao_logicaaa(
+	input [4:0]  _0A_e_1R,
+	output  reg [9:0]  saidas
+	
+);
+	
+always @ (*) // 000(1) 001(2) 010(3) 100(4) 
+ begin //saida[2] - saida[1] - saida[0] - carro_verde - carro_amarelo - carro_vermelho - pedestre-verde - pedestre-vermelho
+casex (_0A_e_1R)
+	5'b 10xxx: saidas = 10'b 1000000010;//amarelo piscando
+	5'b 11xxx: saidas = 10'b 0001000100; //estado inicial
+	5'b 01xxx: saidas = 10'b 0001000100;//estado inicial tambem
+	5'b 00000: saidas = 10'b 0011000100;//estado inicial : vai para 001///// ESTADO 1
+	5'b 00001: saidas = 10'b 0100100100;//amarelo/vermelho vai para 010 ///// ESTADO 2
+	5'b 00010: saidas = 10'b 1000011000;//vermelho/verde, vai para 100///// ESTADO 3 
+	5'B 00100: saidas = 10'b 0000010001;//vermelho/pisca vermelho ///// ESTADO 4
+	default : saidas = 10'b 0000000000; //...
+	endcase
+	end
+	endmodule
