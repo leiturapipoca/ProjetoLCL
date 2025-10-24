@@ -4,21 +4,21 @@ O PROJETO DO QUARTUS II  É "projeto_final_cpa" e a bomba é o arquivo "testando
 
 # 💣 Projeto Bomba Relógio em FPGA
 
-[cite_start]Este projeto, desenvolvido para a disciplina de Laboratório de Circuitos Lógicos [cite: 3][cite_start], consiste na implementação de um jogo digital de "Bomba Relógio" [cite: 5] [cite_start]em uma placa de desenvolvimento FPGA Altera DE2[cite: 50]. [cite_start]O objetivo é criar um sistema interativo que desafia o jogador a descobrir uma senha de 6 bits antes que um cronômetro de três minutos chegue a zero[cite: 11].
+Este projeto, desenvolvido para a disciplina de Laboratório de Circuitos Lógicos, consiste na implementação de um jogo digital de "Bomba Relógio" em uma placa de desenvolvimento FPGA Altera DE2.O objetivo é criar um sistema interativo que desafia o jogador a descobrir uma senha de 6 bits antes que um cronômetro de três minutos chegue a zero.
 
 ## 🎯 O Desafio
 
-O jogo simula o desarmamento de uma bomba. Um jogador define uma senha secreta e inicia o cronômetro. Outro jogador deve então adivinhar essa senha. A cada tentativa incorreta, o sistema fornece dicas inteligentes para ajudar na próxima tentativa, enquanto o tempo continua correndo. [cite_start]Se o tempo se esgotar, a bomba "explode"[cite: 13]. Se a senha for adivinhada a tempo, ela é desarmada com sucesso.
+O jogo simula o desarmamento de uma bomba. Um jogador define uma senha secreta e inicia o cronômetro. Outro jogador deve então adivinhar essa senha. A cada tentativa incorreta, o sistema fornece dicas inteligentes para ajudar na próxima tentativa, enquanto o tempo continua correndo. Se o tempo se esgotar, a bomba "explode". Se a senha for adivinhada a tempo, ela é desarmada com sucesso.
 
 ## ⚙️ Funcionalidades Implementadas
 
-* [cite_start]**Definição da Senha:** Ao pressionar o botão "Start", uma senha de 6 bits é capturada das chaves `SW[17:12]` e armazenada internamente[cite: 28].
-* [cite_start]**Contador Regressivo:** Um cronômetro de 3 minutos (iniciado em 2:59) é ativado e exibido nos displays de 7 segmentos da placa[cite: 11, 28].
-* [cite_start]**Sistema de Tentativas:** O jogador insere uma senha de 6 bits com as chaves `SW[5:0]` e a submete pressionando o botão "ENTER"[cite: 29].
-* [cite_start]**Dicas Inteligentes:** Em caso de erro, o sistema oferece duas dicas cruciais para o jogador[cite: 37]:
-    * [cite_start]**Dica Lógica:** O resultado das operações bit-a-bit `AND` e `OR` entre a senha correta e a tentativa é mostrado nos displays `HEX7` e `HEX6`[cite: 38].
-    * [cite_start]**Dica de Posição:** O número de bits corretos na tentativa é exibido em uma barra de progresso nos LEDs vermelhos (`LEDR[5:0]`)[cite: 39].
-* [cite_start]**Condições de Vitória e Derrota:** O jogo termina quando a senha é acertada (congelando o tempo e acendendo os LEDs verdes [cite: 36][cite_start]) ou quando o tempo se esgota, ativando um efeito visual de "explosão" com os LEDs e displays[cite: 42].
+* **Definição da Senha:** Ao pressionar o botão "Start", uma senha de 6 bits é capturada das chaves `SW[17:12]` e armazenada internamente.
+* **Contador Regressivo:** Um cronômetro de 3 minutos (iniciado em 2:59) é ativado e exibido nos displays de 7 segmentos da placa.
+* **Sistema de Tentativas:** O jogador insere uma senha de 6 bits com as chaves `SW[5:0]` e a submete pressionando o botão "ENTER".
+* **Dicas Inteligentes:** Em caso de erro, o sistema oferece duas dicas cruciais para o jogador:
+    * **Dica Lógica:** O resultado das operações bit-a-bit `AND` e `OR` entre a senha correta e a tentativa é mostrado nos displays `HEX7` e `HEX6`.
+    * **Dica de Posição:** O número de bits corretos na tentativa é exibido em uma barra de progresso nos LEDs vermelhos (`LEDR[5:0]`).
+* **Condições de Vitória e Derrota:** O jogo termina quando a senha é acertada (congelando o tempo e acendendo os LEDs verdes ) ou quando o tempo se esgota, ativando um efeito visual de "explosão" com os LEDs e displays.
 
 ## 🛠️ Aprendizados e Desafios: Do Software ao Silício
 
@@ -28,7 +28,7 @@ Implementar este projeto foi muito além de apenas criar um jogo; foi um exercí
 
 Diferente de linguagens de programação convencionais como C++ ou Java, Verilog não é uma linguagem de programação, e sim uma **Linguagem de Descrição de Hardware (HDL)**. Seu propósito não é dar uma sequência de comandos para um processador executar, mas sim **descrever circuitos digitais**.
 
-Neste projeto, o Verilog foi essencial para descrever como os componentes (portas lógicas, flip-flops, contadores, comparadores) se conectam e se comportam. Em vez de escrever um loop `for`, descrevemos um contador que incrementa a cada pulso de clock. [cite_start]Essa descrição é então usada pelo software de síntese (Quartus-II [cite: 50]) para gerar uma configuração de hardware real que é gravada no chip FPGA.
+Neste projeto, o Verilog foi essencial para descrever como os componentes (portas lógicas, flip-flops, contadores, comparadores) se conectam e se comportam. Em vez de escrever um loop `for`, descrevemos um contador que incrementa a cada pulso de clock. Essa descrição é então usada pelo software de síntese (Quartus-II) para gerar uma configuração de hardware real que é gravada no chip FPGA.
 
 ### Programação em Baixo Nível e o Paradigma Paralelo
 
