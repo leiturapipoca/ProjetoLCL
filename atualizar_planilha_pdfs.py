@@ -18,8 +18,9 @@ ARQUIVO_WARNINGS_PADRAO = ONEDRIVE_BASE_DIR / "warnings_notas_tecnicas.txt"
 
 ANO_PADRAO = "2026"
 
-# Regex para Código do Projeto (PE-XXXXX-XXXX/XXXX, aceitando também PD/PG)
-REGEX_PROJETO = re.compile(r"\b(?:PE|PD|PG)-\d+-\d+\s*/\s*\d{4}\b", re.IGNORECASE)
+# Regex separadas: aceita apenas PE e identifica outros (PG, PD) para ignorar
+REGEX_PROJETO_PE = re.compile(r"\bPE-\d+-\d+\s*/\s*\d{4}\b", re.IGNORECASE)
+REGEX_PROJETO_OUTROS = re.compile(r"\b(?!PE-)[A-Z]{2,3}-\d+-\d+\s*/\s*\d{4}\b", re.IGNORECASE)
 
 # Regex para "NOTA TÉCNICA Nº XX/2026" logo após a logo no PDF
 REGEX_NT_CABECALHO = re.compile(
@@ -32,7 +33,6 @@ REGEX_NUMERO_ARQUIVO = re.compile(r"_\s*(\d+)\s*_")
 
 
 def normalizar_nome_coluna(texto: str) -> str:
-    """Remove acentos e espaços extras para localizar colunas na planilha."""
     if not texto:
         return ""
     sem_acento = "".join(
@@ -43,7 +43,6 @@ def normalizar_nome_coluna(texto: str) -> str:
 
 
 def encontrar_coluna(colunas_planilha: list[str], nomes_possiveis: list[str]) -> str:
-    """Retorna o nome exato da coluna na planilha."""
     mapa = {normalizar_nome_coluna(c): c for c in colunas_planilha}
     for nome in nomes_possiveis:
         if nome in colunas_planilha:
@@ -55,7 +54,6 @@ def encontrar_coluna(colunas_planilha: list[str], nomes_possiveis: list[str]) ->
 
 
 def campo_esta_vazio(valor) -> bool:
-    """Verifica se uma célula da planilha está vazia ou sem preenchimento válido."""
     if pd.isna(valor) or valor is None:
         return True
     texto = str(valor).strip()
@@ -63,17 +61,13 @@ def campo_esta_vazio(valor) -> bool:
 
 
 def limpar_celula_pdf(valor_celula: str | None) -> str:
-    """Remove quebras de linha internas da célula do PDF e espaços duplicados."""
     if not valor_celula:
         return ""
     return re.sub(r"\s+", " ", str(valor_celula)).strip()
 
 
 def eh_zero_reais(texto_celula: str) -> bool:
-    """
-    Verifica se o valor na posição 4x3 equivale a R$ 0,00.
-    Retorna False se houver qualquer valor glosado diferente de zero.
-    """
+    """Retorna True se o valor na coluna de glosa equivaler a R$ 0,00."""
     if not texto_celula or not texto_celula.strip():
         return True
     limpo = re.sub(r"\s+", "", texto_celula).upper()
@@ -87,10 +81,10 @@ def eh_zero_reais(texto_celula: str) -> bool:
         return limpo in ("R$0,00", "0,00", "0", "-")
 
 
-def extrair_codigo_projeto(texto_completo: str) -> str | None:
+def extrair_codigo_projeto(texto_completo: str) -> tuple[str | None, str | None]:
     """
-    Procura o código PE-XXXXX-XXXX/XXXX priorizando a última ocorrência
-    dentro do bloco 'I - DO OBJETIVO'.
+    Retorna (codigo_pe, codigo_ignorado).
+    Se o projeto for PG, PD, etc., retorna (None, codigo_outro) para ser ignorado.
     """
     match_bloco = re.search(
         r"(?:I\s*[-–—.]?\s*DO\s+OBJETIVO)(.*?)(?:II\s*[-–—.]|\n\s*2\s*[-–—.]|$)",
@@ -99,25 +93,26 @@ def extrair_codigo_projeto(texto_completo: str) -> str | None:
     )
     if match_bloco:
         trecho_objetivo = match_bloco.group(1)
-        codigos_no_objetivo = REGEX_PROJETO.findall(trecho_objetivo)
-        if codigos_no_objetivo:
-            # Pega a última ocorrência escrita na descrição do bloco I - DO OBJETIVO
-            return chave_projeto(codigos_no_objetivo[-1])
+        codigos_pe = REGEX_PROJETO_PE.findall(trecho_objetivo)
+        if codigos_pe:
+            return chave_projeto(codigos_pe[-1]), None
+        codigos_outros = REGEX_PROJETO_OUTROS.findall(trecho_objetivo)
+        if codigos_outros:
+            return None, codigos_outros[-1].upper()
 
-    # Fallback: primeira ocorrência no texto geral do PDF
-    codigos_geral = REGEX_PROJETO.findall(texto_completo)
-    if codigos_geral:
-        return chave_projeto(codigos_geral[0])
+    # Fallback no texto completo do PDF
+    codigos_pe_geral = REGEX_PROJETO_PE.findall(texto_completo)
+    if codigos_pe_geral:
+        return chave_projeto(codigos_pe_geral[0]), None
 
-    return None
+    codigos_outros_geral = REGEX_PROJETO_OUTROS.findall(texto_completo)
+    if codigos_outros_geral:
+        return None, codigos_outros_geral[0].upper()
+
+    return None, None
 
 
 def extrair_nota_tecnica(texto_primeira_pagina: str, texto_completo: str, nome_arquivo: str) -> tuple[str | None, bool]:
-    """
-    1ª tentativa: 'NOTA TÉCNICA Nº XX/2026' logo após a logo na 1ª página.
-    2ª tentativa: se estiver preenchido com 'XX' (esqueceram de mudar), pega o primeiro
-                  número entre '_ _' no nome do arquivo (_XXX_) e sinaliza warning.
-    """
     match_pdf = REGEX_NT_CABECALHO.search(texto_primeira_pagina) or REGEX_NT_CABECALHO.search(texto_completo)
 
     esqueceu_xx = False
@@ -127,10 +122,8 @@ def extrair_nota_tecnica(texto_primeira_pagina: str, texto_completo: str, nome_a
         if "X" not in num_bruto and num_bruto.isdigit():
             return f"{int(num_bruto)}/{ano_pdf}", False
         else:
-            # Documento está com 'XX/2026'
             esqueceu_xx = True
 
-    # Fallback pelo nome do arquivo (_XXX_)
     stem = Path(nome_arquivo).stem
     match_arq = REGEX_NUMERO_ARQUIVO.search(stem)
     if match_arq:
@@ -140,58 +133,54 @@ def extrair_nota_tecnica(texto_primeira_pagina: str, texto_completo: str, nome_a
     return None, esqueceu_xx
 
 
-def extrair_valor_das_tabelas_pdf(tabelas_brutas: list[list[list[str | None]]]) -> tuple[str | None, bool, str]:
+def extrair_valor_por_total_pdf(
+    tabelas_brutas: list[list[list[str | None]]],
+    texto_completo: str,
+) -> tuple[str | None, bool, str]:
     """
-    Regra das Tabelas no PDF:
-    - Filtra tabelas que tenham pelo menos 4 linhas e 3 colunas.
-    - Se for uma tabela 4x3 (4 linhas x 3 colunas):
-        * Puxa o valor de 4x2 (linha índice 3, coluna índice 1).
-        * Checa 4x3 (linha índice 3, coluna índice 2). Se != R$ 0,00 -> warning 'Valor glosado'.
-    - Em tabelas maiores (mais de 4 linhas ou mais de 3 colunas):
-        * Puxa o valor sempre da posição 4x3 (linha índice 3, coluna índice 2).
+    Procura a linha contendo 'Total' na estrutura: Total | valor | glosado.
+    - Coluna imediatamente após 'Total' -> Valor Aprovado.
+    - Coluna seguinte (se existir e != R$ 0,00) -> Warning 'Valor glosado'.
     """
-    tabelas_candidatas = []
-
+    # 1. Busca estruturada nas tabelas extraídas pelo pdfplumber
     for tab in tabelas_brutas:
-        # Remove linhas inteiramente vazias caso o PDF tenha bordas fantasma
-        linhas_validas = [
-            [limpar_celula_pdf(cel) for cel in linha]
-            for linha in tab
-            if linha and any(limpar_celula_pdf(c) for c in linha)
-        ]
-        if len(linhas_validas) >= 4 and len(linhas_validas[3]) >= 3:
-            tabelas_candidatas.append(linhas_validas)
+        for linha in tab:
+            if not linha:
+                continue
+            # Filtra células vazias/None geradas por mesclagem de colunas no PDF
+            celulas = [limpar_celula_pdf(c) for c in linha if limpar_celula_pdf(c)]
+            for idx, texto_cel in enumerate(celulas):
+                if re.search(r"\bTotal\b", texto_cel, re.IGNORECASE):
+                    if idx + 1 < len(celulas):
+                        valor_aprovado = celulas[idx + 1]
+                        if not re.search(r"\d", valor_aprovado):
+                            continue
 
-    if not tabelas_candidatas:
-        return None, False, ""
+                        texto_glosa = ""
+                        teve_glosa = False
+                        if idx + 2 < len(celulas):
+                            texto_glosa = celulas[idx + 2]
+                            if re.search(r"\d", texto_glosa) and not eh_zero_reais(texto_glosa):
+                                teve_glosa = True
 
-    # Se houver mais de uma tabela >= 4x3, escolhe a que contém dígitos na 4ª linha
-    tabela_alvo = tabelas_candidatas[0]
-    if len(tabelas_candidatas) > 1:
-        for t in tabelas_candidatas:
-            texto_linha_4 = " ".join(t[3])
-            if re.search(r"\d", texto_linha_4):
-                tabela_alvo = t
-                break
+                        return valor_aprovado, teve_glosa, texto_glosa
 
-    qtd_linhas = len(tabela_alvo)
-    qtd_colunas = max(len(linha) for linha in tabela_alvo)
+    # 2. Fallback por linha de texto (caso a tabela no PDF não tenha bordas visíveis)
+    padrao_linha_total = re.compile(
+        r"\bTotal\b[^\d\n]*((?:R\$\s*)?\d{1,3}(?:\.\d{3})*,\d{2})(?:[^\d\n]+((?:R\$\s*)?\d{1,3}(?:\.\d{3})*,\d{2}))?",
+        re.IGNORECASE,
+    )
+    match_txt = padrao_linha_total.search(texto_completo)
+    if match_txt:
+        valor_aprovado = match_txt.group(1).strip()
+        texto_glosa = (match_txt.group(2) or "").strip()
+        teve_glosa = bool(texto_glosa) and not eh_zero_reais(texto_glosa)
+        return valor_aprovado, teve_glosa, texto_glosa
 
-    # Caso 1: Tabela única 4x3
-    if len(tabelas_candidatas) == 1 and qtd_linhas == 4 and qtd_colunas == 3:
-        valor_4x2 = tabela_alvo[3][1]
-        valor_4x3 = tabela_alvo[3][2]
-
-        teve_glosa = not eh_zero_reais(valor_4x3)
-        return valor_4x2, teve_glosa, valor_4x3
-
-    # Caso 2: Tabelas maiores -> posição 4x3 (4ª linha, 3ª coluna)
-    valor_4x3 = tabela_alvo[3][2]
-    return valor_4x3, False, ""
+    return None, False, ""
 
 
 def analisar_pdf(caminho_pdf: Path) -> dict:
-    """Abre um arquivo .pdf com pdfplumber e extrai Projeto, Nota Técnica, Valor e Warnings."""
     textos_paginas = []
     todas_tabelas = []
 
@@ -208,13 +197,21 @@ def analisar_pdf(caminho_pdf: Path) -> dict:
     texto_primeira_pagina = textos_paginas[0] if textos_paginas else ""
     texto_completo = "\n".join(textos_paginas)
 
-    codigo_projeto = extrair_codigo_projeto(texto_completo)
+    codigo_pe, codigo_ignorado = extrair_codigo_projeto(texto_completo)
+    if codigo_ignorado and not codigo_pe:
+        return {
+            "arquivo": caminho_pdf.name,
+            "ignorado_nao_pe": True,
+            "codigo_ignorado": codigo_ignorado,
+        }
+
     nota_tecnica, esqueceu_xx = extrair_nota_tecnica(texto_primeira_pagina, texto_completo, caminho_pdf.name)
-    valor_aprovado, teve_glosa, texto_glosa = extrair_valor_das_tabelas_pdf(todas_tabelas)
+    valor_aprovado, teve_glosa, texto_glosa = extrair_valor_por_total_pdf(todas_tabelas, texto_completo)
 
     return {
         "arquivo": caminho_pdf.name,
-        "codigo_projeto": codigo_projeto,
+        "ignorado_nao_pe": False,
+        "codigo_projeto": codigo_pe,
         "nota_tecnica": nota_tecnica,
         "valor_aprovado": valor_aprovado,
         "esqueceu_xx": esqueceu_xx,
@@ -238,10 +235,9 @@ def executar_atualizacao_pdfs(
         raise FileNotFoundError(f"Planilha não encontrada: {caminho_planilha}")
 
     print("=" * 75)
-    print(" LENDO ARQUIVOS .PDF E ATUALIZANDO PLANILHA DE PROJETOS")
+    print(" LENDO ARQUIVOS .PDF (APENAS PE) E ATUALIZANDO PLANILHA")
     print("=" * 75)
 
-    # Filtra exclusivamente os arquivos .pdf da pasta
     iterador = pasta_notas.rglob("*") if recursivo else pasta_notas.iterdir()
     arquivos_pdf = sorted(
         arq for arq in iterador
@@ -252,12 +248,18 @@ def executar_atualizacao_pdfs(
 
     dados_extraidos: dict[str, dict] = {}
     warnings: list[str] = []
+    ignorados_nao_pe = 0
 
     for idx, arq in enumerate(arquivos_pdf, start=1):
         try:
             info = analisar_pdf(arq)
         except Exception as erro:
             warnings.append(f"[ERRO AO LER PDF] Arquivo: {arq.name} | Erro: {erro}")
+            continue
+
+        if info.get("ignorado_nao_pe"):
+            ignorados_nao_pe += 1
+            print(f"   [{idx}/{len(arquivos_pdf)}] [IGNORADO - NÃO É PE] {info['codigo_ignorado']} ({arq.name})")
             continue
 
         cod = info["codigo_projeto"]
@@ -273,11 +275,11 @@ def executar_atualizacao_pdfs(
         if info["teve_glosa"]:
             warnings.append(
                 f"Valor glosado | Projeto: {cod or 'N/A'} | NT: {nt or 'N/A'} | "
-                f"Valor em 4x3 (Glosa): {info['texto_glosa']} | Valor puxado (4x2): {val} | Arquivo: {arq.name}"
+                f"Valor glosado: {info['texto_glosa']} | Valor aprovado (após Total): {val} | Arquivo: {arq.name}"
             )
 
         if not cod:
-            warnings.append(f"[PROJETO NÃO IDENTIFICADO] Regex PE-XXXXX-XXXX/XXXX não encontrada em: {arq.name}")
+            warnings.append(f"[PROJETO PE NÃO IDENTIFICADO] Regex PE-XXXXX-XXXX/XXXX não encontrada em: {arq.name}")
             continue
 
         dados_extraidos[cod] = info
@@ -290,7 +292,7 @@ def executar_atualizacao_pdfs(
             f.write("\n".join(warnings) + "\n")
     print(f"\n[2/4] Arquivo de warnings salvo em '{caminho_warnings.name}' ({len(warnings)} ocorrência(s)).")
 
-    # 3. Ler planilha e verificar quais linhas precisam de atualização
+    # 3. Ler planilha e verificar atualizações (apenas projetos PE)
     print(f"[3/4] Analisando planilha '{caminho_planilha.name}'...")
     df = pd.read_excel(caminho_planilha, sheet_name=nome_aba)
     colunas_originais = [str(c).strip() for c in df.columns]
@@ -305,11 +307,10 @@ def executar_atualizacao_pdfs(
     idx_col_nt = colunas_originais.index(col_nt) + 1
     idx_col_valor = colunas_originais.index(col_valor) + 1
 
-    # Preserva o padrão de maiúsculas/minúsculas do "SIM" usado na planilha
     amostra_aneel = df[col_aneel].dropna().astype(str).str.strip().tolist()
     texto_sim = "SIM" if "SIM" in amostra_aneel else "Sim"
 
-    atualizacoes = []  # (linha_excel, codigo, novo_aneel, nova_nt, novo_valor)
+    atualizacoes = []
 
     for idx_df, row in df.iterrows():
         cod_bruto = str(row[col_cod]).strip() if pd.notna(row[col_cod]) else ""
@@ -319,6 +320,10 @@ def executar_atualizacao_pdfs(
         try:
             chave = chave_projeto(cod_bruto)
         except ValueError:
+            continue
+
+        # Ignora se não for PE-
+        if not chave.upper().startswith("PE-"):
             continue
 
         if chave not in dados_extraidos:
@@ -342,7 +347,7 @@ def executar_atualizacao_pdfs(
             novo_val = val_pdf if (era_nao or valor_vazio) and val_pdf else None
             atualizacoes.append((linha_excel, chave, novo_aneel, nova_nt, novo_val))
 
-    # 4. Gravar alterações na planilha Excel preservando a formatação
+    # 4. Gravar alterações na planilha Excel
     print(f"[4/4] Aplicando atualizações em {len(atualizacoes)} linha(s) da planilha...")
     if atualizacoes:
         while True:
@@ -368,16 +373,16 @@ def executar_atualizacao_pdfs(
     print("\n" + "=" * 75)
     print(" RESUMO FINAL (LEITURA DE PDFS)")
     print("=" * 75)
-    print(f" - Documentos .pdf processados com código válido  : {len(dados_extraidos)}")
+    print(f" - Projetos PE válidos extraídos                  : {len(dados_extraidos)}")
+    print(f" - Projetos ignorados (PG, PD, etc.)              : {ignorados_nao_pe}")
     print(f" - Projetos atualizados na planilha Excel         : {len(atualizacoes)}")
     print(f" - Ocorrências salvas no arquivo de warnings      : {len(warnings)}")
-    print(f" - Caminho do arquivo de warnings                 : {caminho_warnings}")
     print("=" * 75)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Extrai Projeto, Nota Técnica e Valor diretamente dos arquivos .pdf e atualiza a planilha."
+        description="Extrai Projeto (apenas PE), Nota Técnica e Valor (após Total) dos arquivos .pdf e atualiza a planilha."
     )
     parser.add_argument("--pasta", "-p", type=Path, default=PASTA_NOTAS_PADRAO, help="Pasta com as Notas Técnicas (.pdf).")
     parser.add_argument("--planilha", "-x", type=Path, default=PLANILHA_EXCEL_PADRAO, help="Planilha Excel (.xlsx).")
