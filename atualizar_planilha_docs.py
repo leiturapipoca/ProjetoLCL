@@ -18,10 +18,11 @@ ARQUIVO_WARNINGS_PADRAO = ONEDRIVE_BASE_DIR / "warnings_notas_tecnicas.txt"
 
 ANO_PADRAO = "2026"
 
-# Regex para Código do Projeto (PE-XXXXX-XXXX/XXXX)
-REGEX_PROJETO = re.compile(r"\b(?:PE|PD|PG)-\d+-\d+\s*/\s*\d{4}\b", re.IGNORECASE)
+# Regex separadas: uma estrita para PE e outra para detectar projetos que devem ser ignorados (ex: PG, PD)
+REGEX_PROJETO_PE = re.compile(r"\bPE-\d+-\d+\s*/\s*\d{4}\b", re.IGNORECASE)
+REGEX_PROJETO_OUTROS = re.compile(r"\b(?!PE-)[A-Z]{2,3}-\d+-\d+\s*/\s*\d{4}\b", re.IGNORECASE)
 
-# Regex para "NOTA TÉCNICA Nº XX/2026" logo após a logo
+# Regex para "NOTA TÉCNICA Nº XX/2026"
 REGEX_NT_CABECALHO = re.compile(
     r"NOTA\s+T[ÉE]CNICA\s*(?:N[º°o.]*)?\s*([0-9X]+)\s*/\s*(\d{4})",
     re.IGNORECASE,
@@ -32,7 +33,6 @@ REGEX_NUMERO_ARQUIVO = re.compile(r"_\s*(\d+)\s*_")
 
 
 def normalizar_nome_coluna(texto: str) -> str:
-    """Remove acentos e espaços extras para localizar colunas na planilha."""
     if not texto:
         return ""
     sem_acento = "".join(
@@ -43,7 +43,6 @@ def normalizar_nome_coluna(texto: str) -> str:
 
 
 def encontrar_coluna(colunas_planilha: list[str], nomes_possiveis: list[str]) -> str:
-    """Retorna o nome exato da coluna na planilha."""
     mapa = {normalizar_nome_coluna(c): c for c in colunas_planilha}
     for nome in nomes_possiveis:
         if nome in colunas_planilha:
@@ -55,29 +54,23 @@ def encontrar_coluna(colunas_planilha: list[str], nomes_possiveis: list[str]) ->
 
 
 def campo_esta_vazio(valor) -> bool:
-    """Verifica se uma célula da planilha está vazia ou sem preenchimento válido."""
     if pd.isna(valor) or valor is None:
         return True
     texto = str(valor).strip()
     return not bool(texto) or texto.lower() in ("nan", "none", "-", "n/a", "não", "nao")
 
 
-def limpar_valor_monetario(texto_celula: str) -> str:
-    """Extrai o valor limpando quebras de linha e múltiplos espaços."""
+def limpar_texto_celula(texto_celula: str) -> str:
     if not texto_celula:
         return ""
     return re.sub(r"\s+", " ", texto_celula).strip()
 
 
 def eh_zero_reais(texto_celula: str) -> bool:
-    """
-    Verifica se o valor contido na célula 4x3 equivale a R$ 0,00.
-    Retorna False se houver qualquer valor glosado diferente de zero.
-    """
+    """Retorna True se o valor na coluna de glosa for R$ 0,00 (ou vazio)."""
     if not texto_celula or not texto_celula.strip():
         return True
     limpo = re.sub(r"\s+", "", texto_celula).upper()
-    # Extrai apenas dígitos e separadores decimais
     match_num = re.search(r"(\d[\d.,]*)", limpo)
     if not match_num:
         return True
@@ -89,10 +82,7 @@ def eh_zero_reais(texto_celula: str) -> bool:
 
 
 def extrair_textos_documento(doc: Document) -> tuple[str, str]:
-    """Lê o texto do cabeçalho/topo (logo após a logo) e o corpo completo do .docx."""
     partes_topo = []
-
-    # 1. Cabeçalhos das seções do Word
     for section in doc.sections:
         for p in section.header.paragraphs:
             if p.text.strip():
@@ -103,10 +93,8 @@ def extrair_textos_documento(doc: Document) -> tuple[str, str]:
                     if cell.text.strip():
                         partes_topo.append(cell.text.strip())
 
-    # 2. Parágrafos do corpo
     paragrafos_corpo = [p.text.strip() for p in doc.paragraphs if p.text.strip()]
 
-    # 3. Caso o título "NOTA TÉCNICA Nº" esteja em uma tabela de topo no corpo
     textos_primeira_tabela = []
     if doc.tables:
         for row in doc.tables[0].rows[:3]:
@@ -119,10 +107,11 @@ def extrair_textos_documento(doc: Document) -> tuple[str, str]:
     return texto_topo, texto_corpo_completo
 
 
-def extrair_codigo_projeto(doc: Document, texto_corpo: str) -> str | None:
+def extrair_codigo_projeto(doc: Document, texto_corpo: str) -> tuple[str | None, str | None]:
     """
-    Procura a regex PE-XXXXX-XXXX/XXXX priorizando a última coisa escrita
-    no bloco 'I - DO OBJETIVO'.
+    Retorna (codigo_pe, codigo_ignorado).
+    Prioriza o bloco 'I - DO OBJETIVO'. Se encontrar apenas projeto não-PE (ex: PG-...),
+    retorna (None, codigo_outro) para que o arquivo seja ignorado sem gerar warning.
     """
     match_bloco = re.search(
         r"(?:I\s*[-–—.]?\s*DO\s+OBJETIVO)(.*?)(?:II\s*[-–—.]|\n\s*2\s*[-–—.]|$)",
@@ -131,32 +120,37 @@ def extrair_codigo_projeto(doc: Document, texto_corpo: str) -> str | None:
     )
     if match_bloco:
         trecho_objetivo = match_bloco.group(1)
-        codigos_no_objetivo = REGEX_PROJETO.findall(trecho_objetivo)
-        if codigos_no_objetivo:
-            return chave_projeto(codigos_no_objetivo[-1])
+        codigos_pe = REGEX_PROJETO_PE.findall(trecho_objetivo)
+        if codigos_pe:
+            return chave_projeto(codigos_pe[-1]), None
+        codigos_outros = REGEX_PROJETO_OUTROS.findall(trecho_objetivo)
+        if codigos_outros:
+            return None, codigos_outros[-1].upper()
 
-    # Fallback: busca no corpo inteiro do documento
-    codigos_corpo = REGEX_PROJETO.findall(texto_corpo)
-    if codigos_corpo:
-        return chave_projeto(codigos_corpo[0])
+    # Fallback: procura no corpo inteiro
+    codigos_pe_corpo = REGEX_PROJETO_PE.findall(texto_corpo)
+    if codigos_pe_corpo:
+        return chave_projeto(codigos_pe_corpo[0]), None
 
-    # Fallback extra: busca nas tabelas
+    codigos_outros_corpo = REGEX_PROJETO_OUTROS.findall(texto_corpo)
+    if codigos_outros_corpo:
+        return None, codigos_outros_corpo[0].upper()
+
+    # Fallback extra: procura nas tabelas
     for tabela in doc.tables:
         for row in tabela.rows:
             for cell in row.cells:
-                achados = REGEX_PROJETO.findall(cell.text)
-                if achados:
-                    return chave_projeto(achados[0])
+                achados_pe = REGEX_PROJETO_PE.findall(cell.text)
+                if achados_pe:
+                    return chave_projeto(achados_pe[0]), None
+                achados_outros = REGEX_PROJETO_OUTROS.findall(cell.text)
+                if achados_outros:
+                    return None, achados_outros[0].upper()
 
-    return None
+    return None, None
 
 
 def extrair_nota_tecnica(texto_topo: str, texto_corpo: str, nome_arquivo: str) -> tuple[str | None, bool]:
-    """
-    1ª tentativa: 'NOTA TÉCNICA Nº XX/2026' no documento.
-    2ª tentativa: se estiver preenchido com 'XX' (esqueceram de mudar), pega o primeiro
-                  número entre '_ _' no nome do arquivo (_XXX_) e marca warning.
-    """
     match_doc = REGEX_NT_CABECALHO.search(texto_topo) or REGEX_NT_CABECALHO.search(texto_corpo)
 
     esqueceu_xx = False
@@ -168,7 +162,6 @@ def extrair_nota_tecnica(texto_topo: str, texto_corpo: str, nome_arquivo: str) -
         else:
             esqueceu_xx = True
 
-    # Extrai do nome do arquivo (_XXX_)
     stem = Path(nome_arquivo).stem
     match_arq = REGEX_NUMERO_ARQUIVO.search(stem)
     if match_arq:
@@ -178,59 +171,65 @@ def extrair_nota_tecnica(texto_topo: str, texto_corpo: str, nome_arquivo: str) -
     return None, esqueceu_xx
 
 
-def extrair_valor_das_tabelas(doc: Document) -> tuple[str | None, bool, str]:
+def extrair_valor_por_total_docx(doc: Document) -> tuple[str | None, bool, str]:
     """
-    - Se a tabela de dados for 4x3 (4 linhas x 3 colunas):
-        * Puxa o valor de 4x2 (rows[3].cells[1]).
-        * Checa 4x3 (rows[3].cells[2]). Se != R$ 0,00 -> adiciona warning 'Valor glosado'.
-    - Se a tabela for maior:
-        * Puxa o valor de 4x3 (rows[3].cells[2]).
+    Procura nas tabelas a célula contendo 'Total' (ex: Total | valor | glosado).
+    - O Valor Aprovado está na coluna imediatamente após 'Total'.
+    - Se houver mais uma coluna à direita ('glosado') e ela não for R$ 0,00,
+      marca warning como 'Valor glosado'.
     """
-    tabelas_validas = [
-        t for t in doc.tables
-        if len(t.rows) >= 4 and len(t.columns) >= 3
-    ]
+    for tabela in doc.tables:
+        for row in tabela.rows:
+            # Desduplica células mescladas horizontalmente usando o elemento XML (_tc)
+            celulas_unicas = []
+            tc_vistos = set()
+            for cell in row.cells:
+                if id(cell._tc) not in tc_vistos:
+                    tc_vistos.add(id(cell._tc))
+                    txt = limpar_texto_celula(cell.text)
+                    if txt:
+                        celulas_unicas.append(txt)
 
-    if not tabelas_validas:
-        return None, False, ""
+            for idx, texto_cel in enumerate(celulas_unicas):
+                # Verifica se a célula contém a palavra "Total" (ignorando "Subtotal")
+                if re.search(r"\bTotal\b", texto_cel, re.IGNORECASE):
+                    if idx + 1 < len(celulas_unicas):
+                        valor_aprovado = celulas_unicas[idx + 1]
+                        # Confirma que a célula seguinte contém dígitos
+                        if not re.search(r"\d", valor_aprovado):
+                            continue
 
-    # Prioriza a tabela que possui valores numéricos na 4ª linha
-    tabela_alvo = tabelas_validas[0]
-    if len(tabelas_validas) > 1:
-        for t in tabelas_validas:
-            texto_linha_4 = " ".join(c.text for c in t.rows[3].cells)
-            if re.search(r"\d", texto_linha_4):
-                tabela_alvo = t
-                break
+                        texto_glosa = ""
+                        teve_glosa = False
+                        if idx + 2 < len(celulas_unicas):
+                            texto_glosa = celulas_unicas[idx + 2]
+                            if re.search(r"\d", texto_glosa) and not eh_zero_reais(texto_glosa):
+                                teve_glosa = True
 
-    qtd_linhas = len(tabela_alvo.rows)
-    qtd_colunas = len(tabela_alvo.columns)
+                        return valor_aprovado, teve_glosa, texto_glosa
 
-    # Caso 1: Tabela exatamente 4x3
-    if qtd_linhas == 4 and qtd_colunas == 3:
-        valor_4x2 = limpar_valor_monetario(tabela_alvo.rows[3].cells[1].text)
-        valor_4x3 = limpar_valor_monetario(tabela_alvo.rows[3].cells[2].text)
-
-        teve_glosa = not eh_zero_reais(valor_4x3)
-        return valor_4x2, teve_glosa, valor_4x3
-
-    # Caso 2: Tabelas maiores -> posição 4x3
-    valor_4x3 = limpar_valor_monetario(tabela_alvo.rows[3].cells[2].text)
-    return valor_4x3, False, ""
+    return None, False, ""
 
 
 def analisar_docx(caminho_docx: Path) -> dict:
-    """Abre um arquivo .docx e retorna todos os dados extraídos e flags de warning."""
     doc = Document(str(caminho_docx))
     texto_topo, texto_corpo = extrair_textos_documento(doc)
 
-    codigo_projeto = extrair_codigo_projeto(doc, texto_corpo)
+    codigo_pe, codigo_ignorado = extrair_codigo_projeto(doc, texto_corpo)
+    if codigo_ignorado and not codigo_pe:
+        return {
+            "arquivo": caminho_docx.name,
+            "ignorado_nao_pe": True,
+            "codigo_ignorado": codigo_ignorado,
+        }
+
     nota_tecnica, esqueceu_xx = extrair_nota_tecnica(texto_topo, texto_corpo, caminho_docx.name)
-    valor_aprovado, teve_glosa, texto_glosa = extrair_valor_das_tabelas(doc)
+    valor_aprovado, teve_glosa, texto_glosa = extrair_valor_por_total_docx(doc)
 
     return {
         "arquivo": caminho_docx.name,
-        "codigo_projeto": codigo_projeto,
+        "ignorado_nao_pe": False,
+        "codigo_projeto": codigo_pe,
         "nota_tecnica": nota_tecnica,
         "valor_aprovado": valor_aprovado,
         "esqueceu_xx": esqueceu_xx,
@@ -254,7 +253,7 @@ def executar_atualizacao_planilha(
         raise FileNotFoundError(f"Planilha não encontrada: {caminho_planilha}")
 
     print("=" * 75)
-    print(" LENDO ARQUIVOS .DOCX E ATUALIZANDO PLANILHA DE PROJETOS")
+    print(" LENDO ARQUIVOS .DOCX (APENAS PE) E ATUALIZANDO PLANILHA")
     print("=" * 75)
 
     iterador = pasta_notas.rglob("*") if recursivo else pasta_notas.iterdir()
@@ -267,12 +266,18 @@ def executar_atualizacao_planilha(
 
     dados_extraidos: dict[str, dict] = {}
     warnings: list[str] = []
+    ignorados_nao_pe = 0
 
     for idx, arq in enumerate(arquivos_docx, start=1):
         try:
             info = analisar_docx(arq)
         except Exception as erro:
             warnings.append(f"[ERRO DE LEITURA] Arquivo: {arq.name} | Erro: {erro}")
+            continue
+
+        if info.get("ignorado_nao_pe"):
+            ignorados_nao_pe += 1
+            print(f"   [{idx}/{len(arquivos_docx)}] [IGNORADO - NÃO É PE] {info['codigo_ignorado']} ({arq.name})")
             continue
 
         cod = info["codigo_projeto"]
@@ -288,11 +293,11 @@ def executar_atualizacao_planilha(
         if info["teve_glosa"]:
             warnings.append(
                 f"Valor glosado | Projeto: {cod or 'N/A'} | NT: {nt or 'N/A'} | "
-                f"Valor em 4x3 (Glosa): {info['texto_glosa']} | Valor puxado (4x2): {val} | Arquivo: {arq.name}"
+                f"Valor glosado: {info['texto_glosa']} | Valor aprovado (após Total): {val} | Arquivo: {arq.name}"
             )
 
         if not cod:
-            warnings.append(f"[PROJETO NÃO IDENTIFICADO] Regex PE-XXXXX-XXXX/XXXX não encontrada em: {arq.name}")
+            warnings.append(f"[PROJETO PE NÃO IDENTIFICADO] Regex PE-XXXXX-XXXX/XXXX não encontrada em: {arq.name}")
             continue
 
         dados_extraidos[cod] = info
@@ -305,7 +310,7 @@ def executar_atualizacao_planilha(
             f.write("\n".join(warnings) + "\n")
     print(f"\n[2/4] Arquivo de warnings salvo em '{caminho_warnings.name}' ({len(warnings)} ocorrência(s)).")
 
-    # 3. Ler planilha e verificar quais linhas precisam de atualização
+    # 3. Ler planilha e identificar atualizações (ignorando projetos que não sejam PE)
     print(f"[3/4] Analisando planilha '{caminho_planilha.name}'...")
     df = pd.read_excel(caminho_planilha, sheet_name=nome_aba)
     colunas_originais = [str(c).strip() for c in df.columns]
@@ -320,11 +325,10 @@ def executar_atualizacao_planilha(
     idx_col_nt = colunas_originais.index(col_nt) + 1
     idx_col_valor = colunas_originais.index(col_valor) + 1
 
-    # Verifica se a planilha usa "SIM" ou "Sim"
     amostra_aneel = df[col_aneel].dropna().astype(str).str.strip().tolist()
     texto_sim = "SIM" if "SIM" in amostra_aneel else "Sim"
 
-    atualizacoes = []  # (linha_excel, codigo, alterar_aneel, nova_nt, novo_valor)
+    atualizacoes = []
 
     for idx_df, row in df.iterrows():
         cod_bruto = str(row[col_cod]).strip() if pd.notna(row[col_cod]) else ""
@@ -334,6 +338,10 @@ def executar_atualizacao_planilha(
         try:
             chave = chave_projeto(cod_bruto)
         except ValueError:
+            continue
+
+        # Ignora se não começar com PE-
+        if not chave.upper().startswith("PE-"):
             continue
 
         if chave not in dados_extraidos:
@@ -357,7 +365,7 @@ def executar_atualizacao_planilha(
             novo_val = val_doc if (era_nao or valor_vazio) and val_doc else None
             atualizacoes.append((linha_excel, chave, novo_aneel, nova_nt, novo_val))
 
-    # 4. Gravar alterações na planilha Excel preservando a formatação
+    # 4. Gravar alterações na planilha Excel
     print(f"[4/4] Aplicando atualizações em {len(atualizacoes)} linha(s) da planilha...")
     if atualizacoes:
         while True:
@@ -381,18 +389,18 @@ def executar_atualizacao_planilha(
                 input(" >>> Feche a planilha no Excel e pressione ENTER para salvar... ")
 
     print("\n" + "=" * 75)
-    print(" RESUMO FINAL")
+    print(" RESUMO FINAL (LEITURA DE DOCX)")
     print("=" * 75)
-    print(f" - Documentos .docx processados com código válido : {len(dados_extraidos)}")
+    print(f" - Projetos PE válidos extraídos                  : {len(dados_extraidos)}")
+    print(f" - Projetos ignorados (PG, PD, etc.)              : {ignorados_nao_pe}")
     print(f" - Projetos atualizados na planilha Excel         : {len(atualizacoes)}")
     print(f" - Ocorrências salvas no arquivo de warnings      : {len(warnings)}")
-    print(f" - Caminho do arquivo de warnings                 : {caminho_warnings}")
     print("=" * 75)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Extrai Projeto, Nota Técnica e Valor dos arquivos .docx e atualiza a planilha."
+        description="Extrai Projeto (apenas PE), Nota Técnica e Valor (após Total) dos arquivos .docx e atualiza a planilha."
     )
     parser.add_argument("--pasta", "-p", type=Path, default=PASTA_NOTAS_PADRAO, help="Pasta com as Notas Técnicas.")
     parser.add_argument("--planilha", "-x", type=Path, default=PLANILHA_EXCEL_PADRAO, help="Planilha Excel (.xlsx).")
