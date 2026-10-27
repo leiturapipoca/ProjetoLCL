@@ -18,52 +18,27 @@ ARQUIVO_WARNINGS_PADRAO = ONEDRIVE_BASE_DIR / "warnings_notas_tecnicas.txt"
 
 ANO_PADRAO = "2026"
 
-# Regex multi-linha para PE: suporta quebra de linha e espaços grandes no meio do código
-# Ex: "PE-\n   00404-0072/2016", "PE-00404-\n   0072-2016", "PE-00404-00\n   72/2016"
-REGEX_PROJETO_PE = re.compile(
-    r"\bPE[\s\r\n]*[-–—_][\s\r\n]*"
-    r"(\d(?:[\s\r\n]*\d){2,5})[\s\r\n]*[-–—_][\s\r\n]*"
-    r"(\d(?:[\s\r\n]*\d){2,4})[\s\r\n]*[/_–—-][\s\r\n]*"
-    r"((?:19|20)\d(?:[\s\r\n]*\d){2})\b",
-    re.IGNORECASE,
-)
+# REGEX PRINCIPAIS (Exatamente as que funcionaram no seu código base)
+REGEX_PROJETO_PE = re.compile(r"\bPE-\d+-\d+\s*[/_–—-]\s*\d{4}\b", re.IGNORECASE)
+REGEX_PROJETO_OUTROS = re.compile(r"\b(?!PE-)[A-Z]{2,3}-\d+-\d+\s*[/_–—-]\s*\d{4}\b", re.IGNORECASE)
 
-# Identifica projetos não-PE (ex: PG, PD) mesmo com quebra de linha para ignorá-los
-REGEX_PROJETO_OUTROS = re.compile(
-    r"\b(?!PE[\s\r\n]*[-–—_])([A-Z]{2,3})[\s\r\n]*[-–—_][\s\r\n]*"
-    r"(\d(?:[\s\r\n]*\d){2,5})[\s\r\n]*[-–—_][\s\r\n]*"
-    r"(\d(?:[\s\r\n]*\d){2,4})[\s\r\n]*[/_–—-][\s\r\n]*"
-    r"((?:19|20)\d(?:[\s\r\n]*\d){2})\b",
-    re.IGNORECASE,
-)
-
-# Regex flexível para "NOTA TÉCNICA Nº XXX/2026":
-# Ignora traço embaixo do Nº (_), espaços, quebras de linha ou símbolos entre NOTA TÉCNICA e o número
+# Regex principal para "NOTA TÉCNICA Nº XX/2026"
 REGEX_NT_CABECALHO = re.compile(
-    r"N\s*O\s*T\s*A\s+T\s*[EÉ]\s*C\s*N\s*I\s*C\s*A"
-    r"[^0-9X]{0,30}?"
-    r"(\d{1,5}|X{1,5})\s*[/_–—-]\s*(20\d{2})",
+    r"NOTA\s+T[ÉE]CNICA\s*(?:N[º°o.]*)?\s*([0-9X]+)\s*/\s*(\d{4})",
     re.IGNORECASE,
 )
 
-# Primeiro número entre "_" e "_" no nome do arquivo (_XXX_)
+# Regex FALLBACK para a 1ª linha da Nota Técnica (aceita traço '_' embaixo do Nº, símbolos ou quebra de linha)
+REGEX_NT_TOPO_FALLBACK = re.compile(
+    r"NOTA\s+T[EÉ]CNICA[\s_º°oªN.:º\-–—]*?([0-9X]{1,5})\s*/\s*(20\d{2})",
+    re.IGNORECASE,
+)
+
+# Regex para o primeiro número entre "_" e "_" no nome do arquivo (_XXX_)
 REGEX_NUMERO_ARQUIVO = re.compile(r"_\s*(\d+)\s*_")
 
-# Valores monetários brasileiros (ex: R$ 1.234.567,89 ou 0,00)
+# Regex para valores monetários no padrão brasileiro (ex: R$ 1.234.567,89 ou 0,00)
 REGEX_VALOR_BR = re.compile(r"(?:R\$\s*)?\d{1,3}(?:\.\d{3})*,\d{2}|\b\d+,\d{2}\b")
-
-
-def normalizar_unicode_pdf(texto: str) -> str:
-    """
-    Converte caracteres decompostos do PDF (ex: 'E' + acento separado) para NFC ('É')
-    e une números que o PDF tenha separado com espaço após ponto/vírgula.
-    """
-    if not texto:
-        return ""
-    txt = unicodedata.normalize("NFC", str(texto))
-    # Une espaçamentos de kerning em números (ex: '150. 000, 00' -> '150.000,00')
-    txt = re.sub(r"(\d)\s*([.,])\s*(\d)", r"\1\2\3", txt)
-    return txt
 
 
 def normalizar_nome_coluna(texto: str) -> str:
@@ -90,17 +65,20 @@ def encontrar_coluna(colunas_planilha: list[str], nomes_possiveis: list[str]) ->
 def limpar_celula_pdf(valor_celula: str | None) -> str:
     if not valor_celula:
         return ""
-    txt = normalizar_unicode_pdf(str(valor_celula))
-    return re.sub(r"\s+", " ", txt).strip()
+    return re.sub(r"\s+", " ", str(valor_celula)).strip()
 
 
 def converter_para_float_br(texto_valor) -> float | None:
+    """
+    Converte 'R$ 1.250.430,50' ou '1250430,50' para float (1250430.50)
+    para que o Excel substitua células com 'R$ 0,00' sem erro de formatação.
+    """
     if texto_valor is None or pd.isna(texto_valor):
         return None
     if isinstance(texto_valor, (int, float)):
         return float(texto_valor)
 
-    texto = normalizar_unicode_pdf(str(texto_valor)).strip()
+    texto = str(texto_valor).strip()
     match = REGEX_VALOR_BR.search(texto)
     alvo = match.group(0) if match else texto
     limpo = re.sub(r"[R$\s]", "", alvo)
@@ -114,6 +92,7 @@ def converter_para_float_br(texto_valor) -> float | None:
 
 
 def eh_zero_reais(texto_celula) -> bool:
+    """Retorna True se o valor for R$ 0,00, 0 ou vazio."""
     if texto_celula is None or pd.isna(texto_celula):
         return True
     val_float = converter_para_float_br(texto_celula)
@@ -135,68 +114,26 @@ def campo_valor_precisa_atualizar(valor_planilha) -> bool:
     return eh_zero_reais(valor_planilha)
 
 
-def montar_codigo_pe_limpo(grupos_match: tuple[str, str, str]) -> str:
-    """Reconstrói 'PE-XXXXX-XXXX/XXXX' removendo quebras de linha e espaços internos."""
-    p1 = re.sub(r"\s+", "", grupos_match[0])
-    p2 = re.sub(r"\s+", "", grupos_match[1])
-    ano = re.sub(r"\s+", "", grupos_match[2])
-    return chave_projeto(f"PE-{p1}-{p2}/{ano}")
-
-
-def extrair_texto_bloco_assunto(primeira_pagina) -> str:
+def colar_quebras_de_codigo(texto: str) -> str:
     """
-    Isola as palavras da região do campo 'Assunto' (canto direito do documento)
-    para evitar que quebras de linha com recuo grande misturem colunas.
+    Usado APENAS como fallback: remove quebras de linha e espaços largos
+    ao redor de traços e barras (ex: 'PE-\\n   00404-0072/2016' -> 'PE-00404-0072/2016').
     """
-    try:
-        palavras = primeira_pagina.extract_words(keep_blank_chars=False) or []
-    except Exception:
-        return ""
-
-    w_assunto = None
-    for w in palavras:
-        if re.search(r"^Assunto:?$", normalizar_unicode_pdf(w["text"]), re.IGNORECASE):
-            w_assunto = w
-            break
-
-    if not w_assunto:
-        return ""
-
-    # Pega todas as palavras que estão na coluna do Assunto (mesma margem X ou à direita)
-    # e abaixo da linha do Assunto (até no máximo 250 pontos abaixo)
-    x_min = max(0, w_assunto["x0"] - 25)
-    y_min = w_assunto["top"] - 5
-    y_max = w_assunto["top"] + 250
-
-    palavras_assunto = [
-        w for w in palavras
-        if w["x0"] >= x_min and y_min <= w["top"] <= y_max
-    ]
-    # Ordena linha por linha (agrupando a cada 5pt verticais) e da esquerda para a direita
-    palavras_assunto.sort(key=lambda w: (round(w["top"] / 5.0), w["x0"]))
-    return normalizar_unicode_pdf(" ".join(w["text"] for w in palavras_assunto))
+    sem_quebra_traco = re.sub(r"([A-Z0-9])\s*[-–—_]\s*(\d)", r"\1-\2", texto, flags=re.IGNORECASE)
+    sem_quebra_barra = re.sub(r"(\d)\s*[/_–—-]\s*(\d{4})\b", r"\1/\2", sem_quebra_traco)
+    return sem_quebra_barra
 
 
-def extrair_codigo_projeto(primeira_pagina, texto_completo: str) -> tuple[str | None, str | None]:
+def extrair_codigo_projeto(texto_completo: str, nome_arquivo: str = "") -> tuple[str | None, str | None]:
     """
-    Procura o código PE-XXXXX-XXXX/XXXX (mesmo quebrado em 2 linhas):
-    1º No bloco 'Assunto' (canto superior do documento)
-    2º No bloco 'I - DO OBJETIVO' (última ocorrência)
-    3º No corpo completo do documento
+    1º Executa exatamente a busca original que já funcionava.
+    2º (Fallback) Se não achar por causa de quebra de linha no 'Assunto' ou 'Objetivo',
+       cola as quebras de linha ao redor dos traços e tenta novamente.
+    3º (Fallback) Verifica também o nome do arquivo.
     """
-    # 1. Bloco Assunto (isolado geometricamente no canto da 1ª página)
-    texto_assunto = extrair_texto_bloco_assunto(primeira_pagina)
-    if texto_assunto:
-        matches_pe_assunto = REGEX_PROJETO_PE.findall(texto_assunto)
-        if matches_pe_assunto:
-            return montar_codigo_pe_limpo(matches_pe_assunto[-1]), None
-        matches_outros_assunto = REGEX_PROJETO_OUTROS.findall(texto_assunto)
-        if matches_outros_assunto:
-            g = matches_outros_assunto[-1]
-            cod_outro = re.sub(r"\s+", "", f"{g[0]}-{g[1]}-{g[2]}/{g[3]}").upper()
-            return None, cod_outro
-
-    # 2. Bloco 'I - DO OBJETIVO'
+    # --------------------------------------------------------------------------
+    # 1. MÉTODO PRINCIPAL (Intocado)
+    # --------------------------------------------------------------------------
     match_bloco = re.search(
         r"(?:I\s*[-–—.]?\s*DO\s+OBJETIVO)(.*?)(?:II\s*[-–—.]|\n\s*2\s*[-–—.]|$)",
         texto_completo,
@@ -204,95 +141,101 @@ def extrair_codigo_projeto(primeira_pagina, texto_completo: str) -> tuple[str | 
     )
     if match_bloco:
         trecho_objetivo = match_bloco.group(1)
-        matches_pe = REGEX_PROJETO_PE.findall(trecho_objetivo)
-        if matches_pe:
-            return montar_codigo_pe_limpo(matches_pe[-1]), None
-        matches_outros = REGEX_PROJETO_OUTROS.findall(trecho_objetivo)
-        if matches_outros:
-            g = matches_outros[-1]
-            cod_outro = re.sub(r"\s+", "", f"{g[0]}-{g[1]}-{g[2]}/{g[3]}").upper()
-            return None, cod_outro
+        codigos_pe = REGEX_PROJETO_PE.findall(trecho_objetivo)
+        if codigos_pe:
+            return chave_projeto(re.sub(r"\s*[/_–—-]\s*(\d{4})$", r"/\1", codigos_pe[-1])), None
+        codigos_outros = REGEX_PROJETO_OUTROS.findall(trecho_objetivo)
+        if codigos_outros:
+            return None, codigos_outros[-1].upper()
 
-    # 3. Fallback no texto completo (inclui trecho após a palavra Assunto no texto corrido)
-    matches_pe_geral = REGEX_PROJETO_PE.findall(texto_completo)
-    if matches_pe_geral:
-        return montar_codigo_pe_limpo(matches_pe_geral[0]), None
+    codigos_pe_geral = REGEX_PROJETO_PE.findall(texto_completo)
+    if codigos_pe_geral:
+        return chave_projeto(re.sub(r"\s*[/_–—-]\s*(\d{4})$", r"/\1", codigos_pe_geral[0])), None
 
-    matches_outros_geral = REGEX_PROJETO_OUTROS.findall(texto_completo)
-    if matches_outros_geral:
-        g = matches_outros_geral[0]
-        cod_outro = re.sub(r"\s+", "", f"{g[0]}-{g[1]}-{g[2]}/{g[3]}").upper()
-        return None, cod_outro
+    codigos_outros_geral = REGEX_PROJETO_OUTROS.findall(texto_completo)
+    if codigos_outros_geral:
+        return None, codigos_outros_geral[0].upper()
+
+    # --------------------------------------------------------------------------
+    # 2. FALLBACK 1: Texto com quebra de linha no meio do código (ex: após Assunto)
+    # --------------------------------------------------------------------------
+    texto_colado = colar_quebras_de_codigo(texto_completo)
+    codigos_pe_colado = REGEX_PROJETO_PE.findall(texto_colado)
+    if codigos_pe_colado:
+        return chave_projeto(re.sub(r"\s*[/_–—-]\s*(\d{4})$", r"/\1", codigos_pe_colado[0])), None
+
+    codigos_outros_colado = REGEX_PROJETO_OUTROS.findall(texto_colado)
+    if codigos_outros_colado:
+        return None, codigos_outros_colado[0].upper()
+
+    # --------------------------------------------------------------------------
+    # 3. FALLBACK 2: Nome do próprio arquivo
+    # --------------------------------------------------------------------------
+    if nome_arquivo:
+        nome_colado = colar_quebras_de_codigo(nome_arquivo)
+        codigos_pe_arq = REGEX_PROJETO_PE.findall(nome_colado)
+        if codigos_pe_arq:
+            return chave_projeto(re.sub(r"\s*[/_–—-]\s*(\d{4})$", r"/\1", codigos_pe_arq[0])), None
 
     return None, None
 
 
-def extrair_nota_tecnica(primeira_pagina, texto_primeira_pagina: str, nome_arquivo: str) -> tuple[str | None, bool]:
+def extrair_nota_tecnica(texto_primeira_pagina: str, texto_completo: str, nome_arquivo: str) -> tuple[str | None, bool]:
     """
-    Lê a primeira linha escrita no topo do PDF ('NOTA TÉCNICA Nº XXX/2026'),
-    tolerando traço sublinhado embaixo do Nº, sobrescrito deslocado e acentos decompostos.
-    Só usa o nome do arquivo (_XXX_) e marca warning se no documento estiver 'XX' ou sem número.
+    1º Tenta o método original.
+    2º (Fallback) Se não achou número válido (por causa do traço '_' embaixo do Nº na 1ª linha
+       ou acento decomposto no PDF), inspeciona o topo da 1ª página normalizado antes de cair para o nome do arquivo.
     """
-    # Reconstrói as primeiras linhas do topo da página 1 agrupando palavras com tolerância vertical de 8pt
-    # (isso impede que o 'º' com traço embaixo fique em linha separada de 'NOTA TÉCNICA N')
-    texto_topo_ordenado = ""
-    try:
-        palavras_pag1 = primeira_pagina.extract_words(keep_blank_chars=False) or []
-        if palavras_pag1:
-            top_min = min(w["top"] for w in palavras_pag1)
-            palavras_topo = [w for w in palavras_pag1 if w["top"] <= top_min + 180]
-            palavras_topo.sort(key=lambda w: (round(w["top"] / 8.0), w["x0"]))
-            texto_topo_ordenado = normalizar_unicode_pdf(" ".join(w["text"] for w in palavras_topo))
-    except Exception:
-        pass
+    # Normaliza acentos decompostos do PDF (ex: 'E' + '´' -> 'É') sem alterar o texto
+    pag1_norm = unicodedata.normalize("NFC", texto_primeira_pagina or "")
+    completo_norm = unicodedata.normalize("NFC", texto_completo or "")
 
-     Primeiras_linhas_brutas = "\n".join(texto_primeira_pagina.splitlines()[:15])
-    fontes_busca_topo = [texto_topo_ordenado, Primeiras_linhas_brutas, texto_primeira_pagina]
+    # 1. MÉTODO PRINCIPAL
+    match_pdf = REGEX_NT_CABECALHO.search(pag1_norm) or REGEX_NT_CABECALHO.search(completo_norm)
 
-    encontrou_xx_literal = False
+    esqueceu_xx = False
+    if match_pdf:
+        num_bruto = match_pdf.group(1).strip().upper()
+        ano_pdf = match_pdf.group(2).strip()
+        if "X" not in num_bruto and num_bruto.isdigit():
+            return f"{int(num_bruto)}/{ano_pdf}", False
+        else:
+            esqueceu_xx = True
 
-    for fonte in fontes_busca_topo:
-        if not fonte:
-            continue
-        for match in REGEX_NT_CABECALHO.finditer(fonte):
-            num_bruto = match.group(1).strip().upper()
-            ano_pdf = match.group(2).strip()
-            if "X" not in num_bruto and num_bruto.isdigit():
-                return f"{int(num_bruto)}/{ano_pdf}", False
-            else:
-                encontrou_xx_literal = True
+    # 2. FALLBACK NO TOPO DA 1ª PÁGINA (Trata o traço '_' embaixo do Nº na 1ª linha)
+    # Se a regex principal falhou na 1ª linha por causa do traço embaixo do Nº,
+    # testamos as 10 primeiras linhas com a regex que aceita '_' e símbolos sob o Nº:
+    topo_10_linhas = "\n".join(pag1_norm.splitlines()[:10])
+    match_topo_fallback = REGEX_NT_TOPO_FALLBACK.search(topo_10_linhas)
+    if match_topo_fallback:
+        num_fb = match_topo_fallback.group(1).strip().upper()
+        ano_fb = match_topo_fallback.group(2).strip()
+        if "X" not in num_fb and num_fb.isdigit():
+            # Encontrou o número real na 1ª linha! Não precisa usar o nome do arquivo nem dar warning.
+            return f"{int(num_fb)}/{ano_fb}", False
+        else:
+            esqueceu_xx = True
 
-    # Fallback: se na 1ª linha do arquivo houver diretamente um padrão 'XXX/2026' junto à palavra NOTA ou TÉCNICA
-    primeiras_3_linhas = "\n".join(texto_primeira_pagina.splitlines()[:4])
-    if re.search(r"NOTA|T[EÉ]CNICA", primeiras_3_linhas, re.IGNORECASE):
-        match_curto = re.search(r"\b(\d{1,5})\s*/\s*(20\d{2})\b", primeiras_3_linhas)
-        if match_curto:
-            return f"{int(match_curto.group(1))}/{match_curto.group(2)}", False
-
-    # Se chegou aqui, ou estava com 'XX/2026' ou não tinha número no cabeçalho -> puxa do nome do arquivo (_XXX_)
+    # 3. FALLBACK FINAL: Nome do arquivo (_XXX_)
     stem = Path(nome_arquivo).stem
     match_arq = REGEX_NUMERO_ARQUIVO.search(stem)
     if match_arq:
         num_arq = int(match_arq.group(1))
-        # Dispara o warning '-Esqueceu de mudar na própria nota técnica-'
-        return f"{num_arq}/{ANO_PADRAO}", True if encontrou_xx_literal or True else False
+        return f"{num_arq}/{ANO_PADRAO}", esqueceu_xx
 
-    return None, encontrou_xx_literal
+    return None, esqueceu_xx
 
 
 def extrair_valor_de_matriz_tabela(tab: list[list[str | None]]) -> tuple[str | None, bool, str]:
     """
-    Suporta tabelas de 2 linhas, 3 linhas ou mais.
-    Varre de baixo para cima procurando a linha 'Total' e pega o valor na coluna 'Reconhecido (R$)'
-    (imediatamente após 'Total').
+    Varre uma tabela de baixo para cima procurando a linha 'Total'
+    e extrai o valor da coluna 'Reconhecido (R$)' (imediatamente após 'Total').
     """
     if not tab:
         return None, False, ""
 
     idx_col_reconhecido = None
     for linha in tab[:3]:
-        if not linha:
-            continue
         for idx_c, cel in enumerate(linha):
             txt_c = limpar_celula_pdf(cel)
             if re.search(r"Reconhecid[oa]", txt_c, re.IGNORECASE):
@@ -301,93 +244,85 @@ def extrair_valor_de_matriz_tabela(tab: list[list[str | None]]) -> tuple[str | N
         if idx_col_reconhecido is not None:
             break
 
-    # Varre DE BAIXO PARA CIMA (funciona mesmo se a tabela tiver apenas 2 linhas: Cabeçalho + Total)
     for linha in reversed(tab):
         if not linha:
             continue
 
         texto_linha_inteira = " | ".join(limpar_celula_pdf(c) for c in linha if limpar_celula_pdf(c))
-        if not re.search(r"\bTotal\b", texto_linha_inteira, re.IGNORECASE):
-            continue
+        if re.search(r"\bTotal\b", texto_linha_inteira, re.IGNORECASE):
+            celulas_nao_vazias = [limpar_celula_pdf(c) for c in linha if limpar_celula_pdf(c)]
 
-        # 1. Tenta extrair todos os valores monetários que aparecem na linha após a palavra 'Total'
-        match_apos_total = re.search(r"\bTotal\b(.*)$", texto_linha_inteira, re.IGNORECASE)
-        if match_apos_total:
-            trecho_direito = match_apos_total.group(1)
-            valores_linha = REGEX_VALOR_BR.findall(trecho_direito)
-            if valores_linha:
-                val_aprov = valores_linha[0]
-                glosa = valores_linha[1] if len(valores_linha) > 1 else ""
-                teve_glosa = bool(glosa) and not eh_zero_reais(glosa)
-                return val_aprov, teve_glosa, glosa
+            for idx, texto_cel in enumerate(celulas_nao_vazias):
+                if re.search(r"\bTotal\b", texto_cel, re.IGNORECASE):
+                    # Caso 'Total' e o valor tenham ficado juntos na mesma célula
+                    valores_mesma_celula = REGEX_VALOR_BR.findall(texto_cel)
+                    if valores_mesma_celula:
+                        val_aprov = valores_mesma_celula[0]
+                        glosa = valores_mesma_celula[1] if len(valores_mesma_celula) > 1 else ""
+                        if idx + 1 < len(celulas_nao_vazias) and not glosa:
+                            glosa = celulas_nao_vazias[idx + 1]
+                        teve_glosa = bool(glosa) and not eh_zero_reais(glosa)
+                        return val_aprov, teve_glosa, glosa
 
-        # 2. Fallback pelo índice da coluna 'Reconhecido (R$)'
-        if idx_col_reconhecido is not None and idx_col_reconhecido < len(linha):
-            val_col = limpar_celula_pdf(linha[idx_col_reconhecido])
-            if REGEX_VALOR_BR.search(val_col):
-                glosa = ""
-                if idx_col_reconhecido + 1 < len(linha):
-                    glosa = limpar_celula_pdf(linha[idx_col_reconhecido + 1])
-                teve_glosa = bool(glosa) and not eh_zero_reais(glosa)
-                return val_col, teve_glosa, glosa
+                    # Caso padrão: coluna imediatamente após 'Total'
+                    if idx + 1 < len(celulas_nao_vazias):
+                        val_aprov = celulas_nao_vazias[idx + 1]
+                        if REGEX_VALOR_BR.search(val_aprov):
+                            glosa = celulas_nao_vazias[idx + 2] if idx + 2 < len(celulas_nao_vazias) else ""
+                            teve_glosa = bool(glosa) and not eh_zero_reais(glosa)
+                            return val_aprov, teve_glosa, glosa
+
+            if idx_col_reconhecido is not None and idx_col_reconhecido < len(linha):
+                val_col = limpar_celula_pdf(linha[idx_col_reconhecido])
+                if REGEX_VALOR_BR.search(val_col):
+                    glosa = ""
+                    if idx_col_reconhecido + 1 < len(linha):
+                        glosa = limpar_celula_pdf(linha[idx_col_reconhecido + 1])
+                    teve_glosa = bool(glosa) and not eh_zero_reais(glosa)
+                    return val_col, teve_glosa, glosa
+
+            # Fallback se a linha tem 'Total' mas as células vieram divididas de forma atípica
+            match_apos_total = re.search(r"\bTotal\b(.*)$", texto_linha_inteira, re.IGNORECASE)
+            if match_apos_total:
+                valores_restantes = REGEX_VALOR_BR.findall(match_apos_total.group(1))
+                if valores_restantes:
+                    val_aprov = valores_restantes[0]
+                    glosa = valores_restantes[1] if len(valores_restantes) > 1 else ""
+                    teve_glosa = bool(glosa) and not eh_zero_reais(glosa)
+                    return val_aprov, teve_glosa, glosa
 
     return None, False, ""
 
 
-def extrair_valor_pdf_completo(pdf) -> tuple[str | None, bool, str]:
+def busca_relaxada_de_baixo_para_cima(pdf) -> tuple[str | None, bool, str]:
     """
-    Busca o valor na linha 'Total' / coluna 'Reconhecido (R$)' de baixo para cima usando 3 camadas:
-    Camada 1: Tabelas com bordas e tabelas de apenas 2 linhas (min_words_vertical=1).
-    Camada 2: Cruzamento geométrico (X, Y) da linha 'Total' com a coluna 'Reconhecido (R$)'.
-    Camada 3: Varredura de linhas de texto de baixo para cima (incluindo linha vizinha).
+    Acionada automaticamente apenas quando o extrator padrão de tabelas não encontra o valor.
+    Mantém os 3 passos originais e inclui suporte a tabelas de apenas 2 linhas (min_words_vertical=1).
     """
-    configuracoes_tabela = [
-        {},  # Padrão (linhas fechadas)
-        {
-            "vertical_strategy": "lines",
-            "horizontal_strategy": "text",
-            "min_words_vertical": 1,
-            "min_words_horizontal": 1,
-            "snap_tolerance": 5,
-        },
-        {
-            "vertical_strategy": "text",
-            "horizontal_strategy": "lines",
-            "min_words_vertical": 1,  # Essencial para tabelas de apenas 2 linhas!
-            "min_words_horizontal": 1,
-            "snap_tolerance": 5,
-        },
-        {
-            "vertical_strategy": "text",
-            "horizontal_strategy": "text",
-            "min_words_vertical": 2,
-            "min_words_horizontal": 1,
-            "snap_tolerance": 6,
-            "join_tolerance": 6,
-        },
+    configuracoes_relaxadas = [
+        # Configurações originais
+        {"vertical_strategy": "text", "horizontal_strategy": "lines", "snap_tolerance": 5},
+        {"vertical_strategy": "text", "horizontal_strategy": "text", "snap_tolerance": 6, "join_tolerance": 6},
+        # Fallbacks específicos para tabelas curtas de apenas 2 linhas (Cabeçalho + Total)
+        {"vertical_strategy": "text", "horizontal_strategy": "lines", "min_words_vertical": 1, "snap_tolerance": 5},
+        {"vertical_strategy": "lines", "horizontal_strategy": "text", "min_words_vertical": 1, "snap_tolerance": 5},
     ]
 
-    # Percorre as páginas DE BAIXO PARA CIMA
     for idx_pag in range(len(pdf.pages) - 1, -1, -1):
         pagina = pdf.pages[idx_pag]
 
-        # ----------------------------------------------------------------------
-        # CAMADA 1: Matrizes de Tabela (incluindo tabelas de 2 linhas)
-        # ----------------------------------------------------------------------
-        for cfg in configuracoes_tabela:
+        # 1. Tenta reconstruir a tabela com estratégias flexíveis
+        for cfg in configuracoes_relaxadas:
             try:
-                tabelas = pagina.extract_tables(table_settings=cfg) if cfg else pagina.extract_tables()
+                tabelas = pagina.extract_tables(table_settings=cfg) or []
             except Exception:
                 tabelas = []
-
-            for tab in reversed(tabelas or []):
+            for tab in reversed(tabelas):
                 val, glosa_flag, glosa_txt = extrair_valor_de_matriz_tabela(tab)
                 if val and not eh_zero_reais(val):
                     return val, glosa_flag, glosa_txt
 
-        # ----------------------------------------------------------------------
-        # CAMADA 2: Alinhamento Geométrico (Linha 'Total' x Coluna 'Reconhecido')
-        # ----------------------------------------------------------------------
+        # 2. Alinhamento espacial pelas coordenadas (X, Y) da palavra 'Total' de baixo para cima
         try:
             palavras = pagina.extract_words(keep_blank_chars=False) or []
         except Exception:
@@ -395,54 +330,45 @@ def extrair_valor_pdf_completo(pdf) -> tuple[str | None, bool, str]:
 
         palavras_baixo_cima = sorted(palavras, key=lambda w: w["top"], reverse=True)
         for w_total in palavras_baixo_cima:
-            txt_w = normalizar_unicode_pdf(w_total["text"]).strip()
-            if re.match(r"^Total:?$", txt_w, re.IGNORECASE):
-                y_centro = (w_total["top"] + w_total["bottom"]) / 2.0
-                x_min = w_total["x1"] - 3
-
-                # Captura todas as palavras na mesma faixa horizontal (+/- 14pt) à direita de 'Total'
-                faixa_total = [
+            if re.match(r"^Total:?$", w_total["text"].strip(), re.IGNORECASE):
+                y_ref = w_total["top"]
+                x_min = w_total["x1"] - 2
+                mesma_faixa = [
                     w for w in palavras
-                    if abs(((w["top"] + w["bottom"]) / 2.0) - y_centro) <= 14 and w["x0"] >= x_min
+                    if abs(w["top"] - y_ref) <= 14 and w["x0"] >= x_min
                 ]
-                faixa_total.sort(key=lambda w: w["x0"])
-                texto_faixa = normalizar_unicode_pdf(" ".join(w["text"] for w in faixa_total))
+                mesma_faixa.sort(key=lambda w: w["x0"])
+                texto_faixa = " ".join(w["text"] for w in mesma_faixa)
                 valores_achados = REGEX_VALOR_BR.findall(texto_faixa)
-
                 if valores_achados:
                     val_aprov = valores_achados[0]
                     glosa_txt = valores_achados[1] if len(valores_achados) > 1 else ""
                     teve_glosa = bool(glosa_txt) and not eh_zero_reais(glosa_txt)
-                    if not eh_zero_reais(val_aprov):
-                        return val_aprov, teve_glosa, glosa_txt
+                    return val_aprov, teve_glosa, glosa_txt
 
-        # ----------------------------------------------------------------------
-        # CAMADA 3: Varredura de Linhas de Texto (de baixo para cima + janela vizinha)
-        # ----------------------------------------------------------------------
-        for usar_layout in (True, False):
-            try:
-                txt_pag = normalizar_unicode_pdf(pagina.extract_text(layout=usar_layout) or "")
-            except Exception:
-                txt_pag = ""
+        # 3. Varredura das linhas de texto de baixo para cima (com fallback para linha vizinha)
+        try:
+            txt_pag = pagina.extract_text(layout=True) or pagina.extract_text() or ""
+        except Exception:
+            txt_pag = ""
 
-            linhas = [l.strip() for l in txt_pag.splitlines() if l.strip()]
-            for idx_l in range(len(linhas) - 1, -1, -1):
-                if re.search(r"\bTotal\b", linhas[idx_l], re.IGNORECASE):
-                    # Olha a própria linha do Total e, se o PDF tiver desalinhado, olha a linha vizinha
-                    candidatas = [linhas[idx_l]]
-                    if idx_l + 1 < len(linhas):
-                        candidatas.append(linhas[idx_l + 1])
-                    if idx_l - 1 >= 0:
-                        candidatas.append(linhas[idx_l - 1])
+        linhas = [l.strip() for l in txt_pag.splitlines() if l.strip()]
+        for idx_l in range(len(linhas) - 1, -1, -1):
+            if re.search(r"\bTotal\b", linhas[idx_l], re.IGNORECASE):
+                achados = REGEX_VALOR_BR.findall(linhas[idx_l])
+                if achados:
+                    val_aprov = achados[0]
+                    glosa_txt = achados[1] if len(achados) > 1 else ""
+                    teve_glosa = bool(glosa_txt) and not eh_zero_reais(glosa_txt)
+                    return val_aprov, teve_glosa, glosa_txt
 
-                    for linha_cand in candidatas:
-                        # Se a linha contém 'Total', pega apenas o que vem depois de 'Total'
-                        m_tot = re.search(r"\bTotal\b(.*)$", linha_cand, re.IGNORECASE)
-                        trecho_busca = m_tot.group(1) if m_tot else linha_cand
-                        achados = REGEX_VALOR_BR.findall(trecho_busca)
-                        if achados and not eh_zero_reais(achados[0]):
-                            val_aprov = achados[0]
-                            glosa_txt = achados[1] if len(achados) > 1 else ""
+                # Fallback: se na tabela de 2 linhas o número ficou na linha imediatamente abaixo/acima de 'Total'
+                for vizinha in (idx_l + 1, idx_l - 1):
+                    if 0 <= vizinha < len(linhas):
+                        achados_viz = REGEX_VALOR_BR.findall(linhas[vizinha])
+                        if achados_viz and not eh_zero_reais(achados_viz[0]):
+                            val_aprov = achados_viz[0]
+                            glosa_txt = achados_viz[1] if len(achados_viz) > 1 else ""
                             teve_glosa = bool(glosa_txt) and not eh_zero_reais(glosa_txt)
                             return val_aprov, teve_glosa, glosa_txt
 
@@ -451,22 +377,21 @@ def extrair_valor_pdf_completo(pdf) -> tuple[str | None, bool, str]:
 
 def analisar_pdf(caminho_pdf: Path) -> dict:
     textos_paginas = []
+    todas_tabelas = []
 
     with pdfplumber.open(str(caminho_pdf)) as pdf:
         for pagina in pdf.pages:
-            txt = normalizar_unicode_pdf(pagina.extract_text() or "")
+            txt = pagina.extract_text() or ""
             if txt.strip():
                 textos_paginas.append(txt)
+            tabelas_pag = pagina.extract_tables() or []
+            if tabelas_pag:
+                todas_tabelas.extend(tabelas_pag)
 
-        primeira_pagina = pdf.pages[0] if pdf.pages else None
         texto_primeira_pagina = textos_paginas[0] if textos_paginas else ""
         texto_completo = "\n".join(textos_paginas)
 
-        codigo_pe, codigo_ignorado = (
-            extrair_codigo_projeto(primeira_pagina, texto_completo)
-            if primeira_pagina
-            else (None, None)
-        )
+        codigo_pe, codigo_ignorado = extrair_codigo_projeto(texto_completo, caminho_pdf.name)
         if codigo_ignorado and not codigo_pe:
             return {
                 "arquivo": caminho_pdf.name,
@@ -474,13 +399,24 @@ def analisar_pdf(caminho_pdf: Path) -> dict:
                 "codigo_ignorado": codigo_ignorado,
             }
 
-        nota_tecnica, esqueceu_xx = (
-            extrair_nota_tecnica(primeira_pagina, texto_primeira_pagina, caminho_pdf.name)
-            if primeira_pagina
-            else (None, False)
-        )
+        nota_tecnica, esqueceu_xx = extrair_nota_tecnica(texto_primeira_pagina, texto_completo, caminho_pdf.name)
 
-        valor_aprovado, teve_glosa, texto_glosa = extrair_valor_pdf_completo(pdf)
+        valor_aprovado = None
+        teve_glosa = False
+        texto_glosa = ""
+
+        # 1ª tentativa: Tabelas padrão (de baixo para cima)
+        for tab in reversed(todas_tabelas):
+            val, glosa_flag, glosa_txt = extrair_valor_de_matriz_tabela(tab)
+            if val and not eh_zero_reais(val):
+                valor_aprovado = val
+                teve_glosa = glosa_flag
+                texto_glosa = glosa_txt
+                break
+
+        # 2ª tentativa automática (Fallback): Busca relaxada de baixo para cima se não achou na 1ª
+        if not valor_aprovado or eh_zero_reais(valor_aprovado):
+            valor_aprovado, teve_glosa, texto_glosa = busca_relaxada_de_baixo_para_cima(pdf)
 
     return {
         "arquivo": caminho_pdf.name,
@@ -549,12 +485,11 @@ def executar_atualizacao_pdfs(
         if info["teve_glosa"]:
             warnings.append(
                 f"Valor glosado | Projeto: {cod or 'N/A'} | NT: {nt or 'N/A'} | "
-                f"Valor glosado: {info['texto_glosa']} | Valor aprovado (Reconhecido R$): {val} | Arquivo: {arq.name}"
+                f"Valor glosado: {info['texto_glosa']} | Valor aprovado (após Total): {val} | Arquivo: {arq.name}"
             )
 
         if not cod:
             warnings.append(f"[PROJETO PE NÃO IDENTIFICADO] Regex PE-XXXXX-XXXX/XXXX não encontrada em: {arq.name}")
-            print(f"   [{idx}/{len(arquivos_pdf)}] [AVISO - SEM CÓDIGO PE] ({arq.name})")
             continue
 
         if not val or eh_zero_reais(val):
@@ -567,14 +502,14 @@ def executar_atualizacao_pdfs(
 
         dados_extraidos[cod] = info
 
-    # 2. Salvar arquivo de warnings de auditoria
+    # 2. Salvar arquivo de warnings (auditabilidade)
     caminho_warnings.parent.mkdir(parents=True, exist_ok=True)
     with open(caminho_warnings, "w", encoding="utf-8") as f:
         if warnings:
             f.write("\n".join(warnings) + "\n")
-    print(f"\n[2/4] Arquivo de auditoria salvo em '{caminho_warnings.name}' ({len(warnings)} ocorrência(s)).")
+    print(f"\n[2/4] Arquivo de auditabilidade salvo em '{caminho_warnings.name}' ({len(warnings)} ocorrência(s)).")
 
-    # 3. Ler planilha e preparar atualizações (sobrescrevendo R$ 0,00 ou vazios)
+    # 3. Ler planilha e preparar atualizações (reescrevendo sempre que Valor for vazio ou R$ 0,00)
     print(f"[3/4] Analisando planilha '{caminho_planilha.name}'...")
     df = pd.read_excel(caminho_planilha, sheet_name=nome_aba)
     colunas_originais = [str(c).strip() for c in df.columns]
